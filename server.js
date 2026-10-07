@@ -14,6 +14,11 @@ const Message = require('./models/Message');
 const { verifyToken, checkRole } = require('./middleware/authMiddleware');
 
 const app = express();
+
+// Trust Render's reverse proxy so express-rate-limit
+// can safely read the X-Forwarded-For header.
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 
 // ==========================================
