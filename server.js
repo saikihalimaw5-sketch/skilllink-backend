@@ -28,6 +28,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
   'https://skillmatch-g7.vercel.app',
   'http://localhost:5173',
+  'http://localhost:3000'
 ];
 
 const io = new Server(server, {
