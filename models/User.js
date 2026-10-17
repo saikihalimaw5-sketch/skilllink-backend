@@ -1,40 +1,63 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  fullName: { 
-    type: String, 
-    required: true 
+  fullName: {
+    type: String,
+    required: true
   },
-  email: { 
-    type: String, 
-    required: true, 
-    unique: true 
+  username: {
+    type: String,
+    trim: true,
+    minlength: 3,
+    maxlength: 8,
+    match: /^[a-zA-Z0-9_]+$/
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true
   },
   phoneNumber: {
     type: String,
-    required: false 
+    required: false
   },
-  password: { 
-    type: String, 
-    required: true 
+
+  profileImage: {
+    type: String,
+    default: ''
   },
-  role: { 
-    type: String, 
-    enum: ['student', 'client', 'admin'], 
-    default: 'student' 
+  avatarStyle: {
+    type: String,
+    default: 'default'
   },
-  isMfaVerified: { 
-    type: Boolean, 
-    default: false 
+  password: {
+    type: String,
+    required: true
   },
-  // email otp
-  otp: { 
-    type: String, 
-    default: null 
+  role: {
+    type: String,
+    enum: ['student', 'client', 'admin'],
+    default: 'student'
   },
-  otpExpiresAt: { 
-    type: Date, 
-    default: null 
+  isMfaVerified: {
+    type: Boolean,
+    default: false
+  },
+
+  // Email OTP
+  otp: {
+    type: String,
+    default: null
+  },
+  otpExpiresAt: {
+    type: Date,
+    default: null
+  },
+
+  // Saved Hobbies & Interests
+  hobbies: {
+    type: [String],
+    default: []
   }
 }, { timestamps: true });
 

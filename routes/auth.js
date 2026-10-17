@@ -6,26 +6,50 @@ const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit'); 
 const User = require('../models/User'); 
 
-// rate limiter 
+// Rate limiter
+// Login attempts lang ang lilimitahan.
+// Hindi kasama ang /users, /my-hobbies, /save-hobbies, etc.
 const loginLimiter = rateLimit({ 
   windowMs: 3 * 60 * 1000,  
-  max: 10, 
-  message: { message: 'Too many login attempts. Please try again after 3 minutes.' } 
-}); 
-
-
-// Apply Rate Limiter to all Auth Routes 
-router.use(loginLimiter); 
-
-const transporter = nodemailer.createTransport({ 
-  service: 'gmail', 
-  auth: { 
-    user: process.env.EMAIL_USER, 
-    pass: process.env.EMAIL_PASS 
+  max: 15, 
+  message: { 
+    message: 'Too many login attempts. Please try again after 3 minutes.' 
   } 
 }); 
 
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
 const TEMP_SECRET = process.env.JWT_SECRET || 'secretkey123'; 
+
+// JWT Middleware para ma-verify ang logged in user
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ 
+      message: 'Unauthorized. No token provided.' 
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, TEMP_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(403).json({ 
+      message: 'Invalid or expired token.' 
+    });
+  }
+};
 
 // signup 
 router.post('/signup', async (req, res) => { 
@@ -33,17 +57,26 @@ router.post('/signup', async (req, res) => {
     const { fullName, email, password, phoneNumber, role } = req.body; 
 
     if (!fullName || !email || !password || !phoneNumber) { 
-      return res.status(400).json({ message: 'Please fill in all required fields.' }); 
+      return res.status(400).json({ 
+        message: 'Please fill in all required fields.' 
+      }); 
     } 
 
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() }); 
+    const existingUser = await User.findOne({ 
+      email: email.toLowerCase().trim() 
+    }); 
+
     if (existingUser) { 
-      return res.status(400).json({ message: 'An account with this email address already exists.' }); 
+      return res.status(400).json({ 
+        message: 'An account with this email address already exists.' 
+      }); 
     } 
 
     const salt = await bcrypt.genSalt(10); 
     const hashedPassword = await bcrypt.hash(password, salt); 
-    const generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); 
+    const generatedOTP = Math.floor(
+      100000 + Math.random() * 900000
+    ).toString(); 
 
     const signupToken = jwt.sign( 
       { 
@@ -81,28 +114,45 @@ router.post('/signup', async (req, res) => {
     }); 
 
   } catch (error) { 
-    res.status(500).json({ message: 'Server error during signup.', error: error.message }); 
+    res.status(500).json({ 
+      message: 'Server error during signup.', 
+      error: error.message 
+    }); 
   } 
 }); 
 
-// login 
-router.post('/login', async (req, res) => { 
+// login
+// IMPORTANT: rate limiter is applied ONLY to login.
+router.post('/login', loginLimiter, async (req, res) => { 
   try { 
     const { email, password } = req.body; 
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() }); 
+    const user = await User.findOne({
+  email: email.toLowerCase().trim()
+}).select('+password');
     if (!user) { 
-      return res.status(400).json({ message: 'Invalid email or password.' }); 
+      return res.status(400).json({ 
+        message: 'Invalid email or password.' 
+      }); 
     } 
 
     const isMatch = await bcrypt.compare(password, user.password); 
+
     if (!isMatch) { 
-      return res.status(400).json({ message: 'Invalid email or password.' }); 
+      return res.status(400).json({ 
+        message: 'Invalid email or password.' 
+      }); 
     } 
 
-    const generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); 
+    const generatedOTP = Math.floor(
+      100000 + Math.random() * 900000
+    ).toString(); 
+
     user.otp = generatedOTP; 
-    user.otpExpiresAt = new Date(Date.now() + 3 * 60 * 1000); 
+    user.otpExpiresAt = new Date(
+      Date.now() + 3 * 60 * 1000
+    ); 
+
     await user.save(); 
 
     await transporter.sendMail({ 
@@ -126,9 +176,13 @@ router.post('/login', async (req, res) => {
       message: 'Verification code sent to your email address.' 
     }); 
 
-  } catch (error) { 
-    res.status(500).json({ message: 'Server error during login.', error: error.message }); 
-  } 
+  } catch (error) {
+  console.error('LOGIN ERROR:', error.message);
+
+  res.status(500).json({
+    message: 'Server error during login.'
+  });
+}
 }); 
 
 // otp verification route 
@@ -139,19 +193,29 @@ router.post('/verify-otp', async (req, res) => {
     // A. SIGNUP FLOW 
     if (signupToken) { 
       let decoded; 
+
       try { 
         decoded = jwt.verify(signupToken, TEMP_SECRET); 
       } catch (err) { 
-        return res.status(400).json({ message: 'Signup session expired. Please try signing up again.' }); 
+        return res.status(400).json({ 
+          message: 'Signup session expired. Please try signing up again.' 
+        }); 
       } 
 
       if (decoded.otp !== otp) { 
-        return res.status(400).json({ message: 'Incorrect OTP code. Please try again.' }); 
+        return res.status(400).json({ 
+          message: 'Incorrect OTP code. Please try again.' 
+        }); 
       } 
 
-      const existingUser = await User.findOne({ email: decoded.email }); 
+      const existingUser = await User.findOne({ 
+        email: decoded.email 
+      }); 
+
       if (existingUser) { 
-        return res.status(400).json({ message: 'An account with this email address already exists.' }); 
+        return res.status(400).json({ 
+          message: 'An account with this email address already exists.' 
+        }); 
       } 
 
       const newUser = new User({ 
@@ -166,70 +230,115 @@ router.post('/verify-otp', async (req, res) => {
       await newUser.save(); 
 
       const token = jwt.sign( 
-        { id: newUser._id, role: newUser.role }, 
-        process.env.JWT_SECRET || 'secretkey123', 
-        { expiresIn: '1h' } 
+        { 
+          id: newUser._id, 
+          role: newUser.role 
+        }, 
+        TEMP_SECRET, 
+        { expiresIn: '7d' } 
       ); 
 
       return res.status(201).json({ 
         message: 'Account successfully verified and created!', 
         token, 
-        user: { id: newUser._id, fullName: newUser.fullName, email: newUser.email, role: newUser.role } 
+        user: { 
+          id: newUser._id, 
+          fullName: newUser.fullName, 
+          email: newUser.email, 
+          role: newUser.role 
+        } 
       }); 
     } 
 
-    // login flow 
-    const cleanEmail = email ? email.toLowerCase().trim() : ''; 
-    const user = await User.findOne({ email: cleanEmail }); 
+    // B. LOGIN FLOW 
+    const cleanEmail = email 
+      ? email.toLowerCase().trim() 
+      : ''; 
+
+    const user = await User.findOne({ 
+      email: cleanEmail 
+    }); 
 
     if (!user || !user.otp) { 
-      return res.status(400).json({ message: 'Invalid verification request or missing session.' }); 
+      return res.status(400).json({ 
+        message: 'Invalid verification request or missing session.' 
+      }); 
     } 
 
     if (new Date() > user.otpExpiresAt) { 
-      return res.status(400).json({ message: 'OTP code has expired. Please log in again.' }); 
+      return res.status(400).json({ 
+        message: 'OTP code has expired. Please log in again.' 
+      }); 
     } 
 
     if (user.otp !== otp) { 
-      return res.status(400).json({ message: 'Incorrect OTP code. Please try again.' }); 
+      return res.status(400).json({ 
+        message: 'Incorrect OTP code. Please try again.' 
+      }); 
     } 
 
     user.otp = null; 
     user.otpExpiresAt = null; 
     user.isMfaVerified = true; 
+
     await user.save(); 
 
     const token = jwt.sign( 
-      { id: user._id, role: user.role }, 
-      process.env.JWT_SECRET || 'secretkey123', 
-      { expiresIn: '1h' } 
+      { 
+        id: user._id, 
+        role: user.role 
+      }, 
+      TEMP_SECRET, 
+      { expiresIn: '7d' } 
     ); 
 
-    res.status(200).json({ 
-      message: 'Login successful!', 
-      token, 
-      user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role } 
-    }); 
+    res.status(200).json({
+  message: 'Login successful!',
+  token,
+  user: {
+    id: user._id,
+    fullName: user.fullName,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    profileImage: user.profileImage,
+    avatarStyle: user.avatarStyle,
+phoneNumber: user.phoneNumber
+    
+  }
+});
 
   } catch (error) { 
-    res.status(500).json({ message: 'Server error during OTP verification.', error: error.message }); 
+    res.status(500).json({ 
+      message: 'Server error during OTP verification.', 
+      error: error.message 
+    }); 
   } 
 }); 
 
-// resend otp  
+// resend otp   
 router.post('/resend-otp', async (req, res) => { 
   try { 
     const { email, signupToken } = req.body; 
 
     if (signupToken) { 
       let decoded; 
+
       try { 
-        decoded = jwt.verify(signupToken, TEMP_SECRET, { ignoreExpiration: true }); 
+        decoded = jwt.verify(
+          signupToken, 
+          TEMP_SECRET, 
+          { ignoreExpiration: true }
+        ); 
       } catch (err) { 
-        return res.status(400).json({ message: 'Invalid signup session. Please sign up again.' }); 
+        return res.status(400).json({ 
+          message: 'Invalid signup session. Please sign up again.' 
+        }); 
       } 
 
-      const generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); 
+      const generatedOTP = Math.floor(
+        100000 + Math.random() * 900000
+      ).toString(); 
 
       const newSignupToken = jwt.sign( 
         { 
@@ -265,15 +374,29 @@ router.post('/resend-otp', async (req, res) => {
       }); 
     } 
 
-    const cleanEmail = email ? email.toLowerCase().trim() : ''; 
-    const user = await User.findOne({ email: cleanEmail }); 
+    const cleanEmail = email 
+      ? email.toLowerCase().trim() 
+      : ''; 
+
+    const user = await User.findOne({ 
+      email: cleanEmail 
+    }); 
+
     if (!user) { 
-      return res.status(400).json({ message: 'User not found.' }); 
+      return res.status(400).json({ 
+        message: 'User not found.' 
+      }); 
     } 
 
-    const generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); 
+    const generatedOTP = Math.floor(
+      100000 + Math.random() * 900000
+    ).toString(); 
+
     user.otp = generatedOTP; 
-    user.otpExpiresAt = new Date(Date.now() + 3 * 60 * 1000); 
+    user.otpExpiresAt = new Date(
+      Date.now() + 3 * 60 * 1000
+    ); 
+
     await user.save(); 
 
     await transporter.sendMail({ 
@@ -291,10 +414,15 @@ router.post('/resend-otp', async (req, res) => {
       ` 
     }); 
 
-    res.status(200).json({ message: 'A new verification code has been sent to your email address.' }); 
+    res.status(200).json({ 
+      message: 'A new verification code has been sent to your email address.' 
+    }); 
 
   } catch (error) { 
-    res.status(500).json({ message: 'Server error during OTP resend.', error: error.message }); 
+    res.status(500).json({ 
+      message: 'Server error during OTP resend.', 
+      error: error.message 
+    }); 
   } 
 }); 
 
@@ -304,19 +432,32 @@ router.post('/forgot-password', async (req, res) => {
     const { email } = req.body; 
 
     if (!email) { 
-      return res.status(400).json({ message: 'Please provide your email address.' }); 
+      return res.status(400).json({ 
+        message: 'Please provide your email address.' 
+      }); 
     } 
 
     const cleanEmail = email.toLowerCase().trim(); 
-    const user = await User.findOne({ email: cleanEmail }); 
+
+    const user = await User.findOne({ 
+      email: cleanEmail 
+    }); 
 
     if (!user) { 
-      return res.status(404).json({ message: 'No account found with this email address.' }); 
+      return res.status(404).json({ 
+        message: 'No account found with this email address.' 
+      }); 
     } 
 
-    const generatedOTP = Math.floor(100000 + Math.random() * 900000).toString(); 
+    const generatedOTP = Math.floor(
+      100000 + Math.random() * 900000
+    ).toString(); 
+
     user.otp = generatedOTP; 
-    user.otpExpiresAt = new Date(Date.now() + 3 * 60 * 1000); // Expires in 3 minutes 
+    user.otpExpiresAt = new Date(
+      Date.now() + 3 * 60 * 1000
+    ); 
+
     await user.save(); 
 
     await transporter.sendMail({ 
@@ -334,10 +475,15 @@ router.post('/forgot-password', async (req, res) => {
       ` 
     }); 
 
-    res.status(200).json({ message: 'Password reset code sent to your email address!' }); 
+    res.status(200).json({ 
+      message: 'Password reset code sent to your email address!' 
+    }); 
 
   } catch (error) { 
-    res.status(500).json({ message: 'Server error sending password reset code.', error: error.message }); 
+    res.status(500).json({ 
+      message: 'Server error sending password reset code.', 
+      error: error.message 
+    }); 
   } 
 }); 
 
@@ -347,38 +493,252 @@ router.post('/reset-password', async (req, res) => {
     const { email, otp, newPassword } = req.body; 
 
     if (!email || !otp || !newPassword) { 
-      return res.status(400).json({ message: 'Please provide email, OTP, and new password.' }); 
+      return res.status(400).json({ 
+        message: 'Please provide email, OTP, and new password.' 
+      }); 
     } 
 
     const cleanEmail = email.toLowerCase().trim(); 
-    const user = await User.findOne({ email: cleanEmail }); 
+
+    const user = await User.findOne({ 
+      email: cleanEmail 
+    }); 
 
     if (!user || !user.otp) { 
-      return res.status(400).json({ message: 'Invalid request or missing session.' }); 
+      return res.status(400).json({ 
+        message: 'Invalid request or missing session.' 
+      }); 
     } 
 
     if (new Date() > user.otpExpiresAt) { 
-      return res.status(400).json({ message: 'Reset code has expired. Please request a new code.' }); 
+      return res.status(400).json({ 
+        message: 'Reset code has expired. Please request a new code.' 
+      }); 
     } 
 
     if (user.otp !== otp) { 
-      return res.status(400).json({ message: 'Incorrect reset code. Please try again.' }); 
+      return res.status(400).json({ 
+        message: 'Incorrect reset code. Please try again.' 
+      }); 
     } 
 
-    // Hash  
     const salt = await bcrypt.genSalt(10); 
     user.password = await bcrypt.hash(newPassword, salt); 
 
-    // Clear OTP fields 
     user.otp = null; 
     user.otpExpiresAt = null; 
+
     await user.save(); 
 
-    res.status(200).json({ message: 'Password reset successful! You can now log in with your new password.' }); 
+    res.status(200).json({ 
+      message: 'Password reset successful! You can now log in with your new password.' 
+    }); 
 
   } catch (error) { 
-    res.status(500).json({ message: 'Server error resetting password.', error: error.message }); 
+    res.status(500).json({ 
+      message: 'Server error resetting password.', 
+      error: error.message 
+    }); 
   } 
 }); 
+
+// ==============================================
+// NEW ROUTES: HOBBIES & USERS SYNCING
+// ==============================================
+
+// 1. Save or Update Hobbies for Logged-In User
+router.post('/save-hobbies', verifyToken, async (req, res) => {
+  try {
+    const { hobbies } = req.body;
+    const userId = req.user.id || req.user._id;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { hobbies: hobbies },
+      { new: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        message: 'User not found.'
+      });
+    }
+
+    res.status(200).json({ 
+      message: 'Hobbies saved successfully!', 
+      hobbies: updatedUser.hobbies 
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: 'Error saving hobbies.',
+      error: error.message
+    });
+  }
+});
+
+// 2. Fetch Hobbies of Logged-In User
+router.get('/my-hobbies', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const user = await User.findById(userId)
+      .select('hobbies');
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found.'
+      });
+    }
+
+    res.status(200).json({
+      hobbies: user.hobbies || []
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: 'Error fetching hobbies.',
+      error: error.message
+    });
+  }
+});
+
+// 3. Get All Registered Users
+router.get('/users', verifyToken, async (req, res) => {
+  try {
+    const users = await User.find()
+      .select('username profileImage avatarStyle bio hobbies role updatedAt');
+
+    res.status(200).json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+
+    res.status(500).json({
+      message: 'Error fetching users.'
+    });
+  }
+});
+// 4. Update Profile for Logged-In User
+router.put('/update-profile', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { username, phoneNumber, bio, profileImage, avatarStyle } = req.body;
+
+    // Validate username
+    if (
+      typeof username !== 'string' ||
+      !/^[a-zA-Z0-9_]{3,8}$/.test(username.trim())
+    ) {
+      return res.status(400).json({
+        message: 'Username must be 3–8 characters using letters, numbers, or underscores.'
+      });
+    }
+
+    // Validate phone number
+    if (
+      phoneNumber !== undefined &&
+      (typeof phoneNumber !== 'string' ||
+        (phoneNumber.trim() &&
+          !/^\+?[0-9\s\-()]{7,20}$/.test(phoneNumber.trim())))
+    ) {
+      return res.status(400).json({
+        message: 'Please enter a valid phone number.'
+      });
+    }
+
+    // Validate bio
+    if (
+      bio !== undefined &&
+      (typeof bio !== 'string' || bio.trim().length > 250)
+    ) {
+      return res.status(400).json({
+        message: 'About Me must not exceed 250 characters.'
+      });
+    }
+
+    const updates = {
+      username: username.trim()
+    };
+
+    if (phoneNumber !== undefined) {
+      updates.phoneNumber = phoneNumber.trim();
+    }
+
+    // These fields are optional; only update them if supplied.
+    if (bio !== undefined) {
+      updates.bio = bio.trim();
+    }
+
+    if (profileImage !== undefined) {
+      updates.profileImage = profileImage;
+    }
+
+    if (avatarStyle !== undefined) {
+      updates.avatarStyle = avatarStyle;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updates },
+      {
+        new: true,
+        runValidators: true
+      }
+    ).select('-password -otp -otpExpiresAt');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        message: 'User not found.'
+      });
+    }
+// Notify connected users about the updated profile
+const io = req.app.get('io');
+
+if (io) {
+  io.emit('profile_updated', {
+    userId: String(updatedUser._id),
+    username: updatedUser.username,
+    profileImage: updatedUser.profileImage,
+    avatarStyle: updatedUser.avatarStyle
+  });
+}
+    return res.status(200).json({
+      message: 'Profile updated successfully!',
+      user: updatedUser
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+
+    return res.status(500).json({
+      message: 'Error updating profile.',
+      error: error.message
+    });
+  }
+});
+
+// 5. Get Profile of Logged-In User
+router.get('/my-profile', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+
+    const user = await User.findById(userId)
+      .select('-password -otp -otpExpiresAt');
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found.'
+      });
+    }
+
+    return res.status(200).json({ user });
+  } catch (error) {
+    console.error('Get profile error:', error);
+
+    return res.status(500).json({
+      message: 'Error fetching profile.',
+      error: error.message
+    });
+  }
+});
 
 module.exports = router;

@@ -28,12 +28,19 @@ const messageSchema = new mongoose.Schema(
         ref: 'User',
       },
     ],
+
+    // Tracks whether the recipient has read the message
+    isRead: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
   }
 );
 
+// Existing indexes
 messageSchema.index({
   sender: 1,
   recipient: 1,
@@ -48,6 +55,13 @@ messageSchema.index({
 
 messageSchema.index({
   deletedFor: 1,
+});
+
+// Index for unread message counts
+messageSchema.index({
+  recipient: 1,
+  isRead: 1,
+  createdAt: -1,
 });
 
 module.exports = mongoose.model('Message', messageSchema);

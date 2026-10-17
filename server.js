@@ -1,3 +1,4 @@
+
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
@@ -9,14 +10,18 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
+const projectsRoutes = require('./routes/Project');
+const notificationRoutes = require('./routes/Notification');
 const User = require('./models/User');
 const Message = require('./models/Message');
+const Project = require('./models/project');
+const Notification = require('./models/Notification');
+const Connection = require('./models/Connection');
+const connectionRoutes = require('./routes/connections');
+const messagesRoutes = require('./routes/messages');
 const { verifyToken, checkRole } = require('./middleware/authMiddleware');
 
 const app = express();
-
-// Trust Render's reverse proxy so express-rate-limit
-// can safely read the X-Forwarded-For header.
 app.set('trust proxy', 1);
 
 const server = http.createServer(app);
@@ -28,7 +33,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
   'https://skillmatch-g7.vercel.app',
   'http://localhost:5173',
-  'http://localhost:3000'
+  'http://localhost:3000',
 ];
 
 const io = new Server(server, {
@@ -40,7 +45,7 @@ const io = new Server(server, {
 });
 
 // ==========================================
-// SECURITY MIDDLEWARE
+// MIDDLEWARE
 // ==========================================
 
 app.use(helmet());
@@ -59,8 +64,17 @@ app.use(
 );
 
 app.use(express.json());
+app.set('io', io);
+
+// ==========================================
+// ROUTES
+// ==========================================
 
 app.use('/api/auth', authRoutes);
+app.use('/api/projects', projectsRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/messages', messagesRoutes);
+app.use('/api/connections', connectionRoutes);
 
 // ==========================================
 // HELPERS
@@ -81,80 +95,16 @@ const isValidId = (id) => {
   return Boolean(id) && mongoose.isValidObjectId(id);
 };
 
-// ==========================================
-// NOTIFICATION MODEL
-// ==========================================
-
-const NotificationSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true,
-    },
-
-    senderId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-    },
-
-    type: {
-      type: String,
-      default: 'Message',
-    },
-
-    title: {
-      type: String,
-      required: true,
-    },
-
-    description: {
-      type: String,
-      default: '',
-    },
-
-    isRead: {
-      type: Boolean,
-      default: false,
-    },
-
-    status: {
-      type: String,
-      default: 'pending',
-    },
-
-    // Hide notifications for specific users only.
-    // This does NOT permanently delete notifications.
-    hiddenFor: {
-      type: [
-        {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
-        },
-      ],
-      default: [],
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const Notification =
-  mongoose.models.Notification ||
-  mongoose.model('Notification', NotificationSchema);
-
-// ==========================================
-// NOTIFICATION TIME HELPER
-// ==========================================
-
 function getNotificationTime(date) {
   if (!date) return 'Just now';
 
-  const seconds = Math.floor(
-    (Date.now() - new Date(date).getTime()) / 1000
+  const timestamp = new Date(date).getTime();
+
+  if (Number.isNaN(timestamp)) return 'Just now';
+
+  const seconds = Math.max(
+    0,
+    Math.floor((Date.now() - timestamp) / 1000)
   );
 
   if (seconds < 60) return 'Just now';
@@ -176,6 +126,95 @@ function getNotificationTime(date) {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+/* ==========================================
+   DASHBOARD STATISTICS
+   GET /api/dashboard/stats
+========================================== */
+
+app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
+  try {
+    const currentUserId = getUserId(req.user);
+
+    if (!isValidId(currentUserId)) {
+      return res.status(401).json({
+        message: 'Invalid authenticated user.',
+      });
+    }
+
+    const [
+      projects,
+      collaborations,
+      messages,
+      pendingConnections,
+      pendingJoinRequests,
+    ] = await Promise.all([
+      // Projects owned by the logged-in user
+      Project.countDocuments({
+        owner: currentUserId,
+      }),
+
+      // Accepted connections
+      Connection.countDocuments({
+        status: 'accepted',
+        $or: [
+          { requester: currentUserId },
+          { recipient: currentUserId },
+        ],
+      }),
+
+      // Unread messages
+      Message.countDocuments({
+        recipient: currentUserId,
+        isRead: { $ne: true },
+        deletedFor: { $ne: currentUserId },
+      }),
+
+      // Pending connection requests
+      Connection.countDocuments({
+        recipient: currentUserId,
+        status: 'pending',
+      }),
+
+      // Pending project join requests
+      Project.aggregate([
+        {
+          $match: {
+            owner: new mongoose.Types.ObjectId(currentUserId),
+          },
+        },
+        {
+          $unwind: '$joinRequests',
+        },
+        {
+          $match: {
+            'joinRequests.status': 'Pending',
+          },
+        },
+        {
+          $count: 'count',
+        },
+      ]),
+    ]);
+
+    const pendingProjectRequests =
+      pendingJoinRequests[0]?.count || 0;
+
+    return res.status(200).json({
+      projects,
+      collaborations,
+      messages,
+      requests: pendingConnections + pendingProjectRequests,
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard stats:', error.message);
+
+    return res.status(500).json({
+      message: 'Failed to fetch dashboard statistics.',
+    });
+  }
+});
+
+
 // ==========================================
 // HIDDEN CONVERSATION MODEL
 // Delete for me only
@@ -188,26 +227,18 @@ const HiddenConversationSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
-
     otherUser: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 HiddenConversationSchema.index(
-  {
-    user: 1,
-    otherUser: 1,
-  },
-  {
-    unique: true,
-  }
+  { user: 1, otherUser: 1 },
+  { unique: true }
 );
 
 const HiddenConversation =
@@ -219,7 +250,7 @@ const HiddenConversation =
 // ==========================================
 
 app.get('/api/user/profile', verifyToken, (req, res) => {
-  res.status(200).json({
+  return res.status(200).json({
     message: 'Access granted to user profile.',
     user: req.user,
   });
@@ -234,16 +265,15 @@ app.get(
   verifyToken,
   checkRole(['admin']),
   (req, res) => {
-    res.status(200).json({
+    return res.status(200).json({
       message: 'Access granted to Admin Dashboard.',
     });
   }
 );
 
 // ==========================================
-// GET USERS FOR CHATS LIST
-// Excludes the logged-in user and users whose
-// conversations are hidden by the logged-in user.
+// GET ACCEPTED CONNECTIONS ONLY
+// Used by Messages.jsx
 // ==========================================
 
 app.get('/api/users', verifyToken, async (req, res) => {
@@ -256,6 +286,26 @@ app.get('/api/users', verifyToken, async (req, res) => {
       });
     }
 
+    const connections = await Connection.find({
+      status: 'accepted',
+      $or: [
+        { requester: currentUserId },
+        { recipient: currentUserId },
+      ],
+    })
+      .select('requester recipient')
+      .lean();
+
+    const connectedUserIds = connections.map((connection) =>
+      String(connection.requester) === currentUserId
+        ? String(connection.recipient)
+        : String(connection.requester)
+    );
+
+    if (connectedUserIds.length === 0) {
+      return res.status(200).json([]);
+    }
+
     const hiddenConversations = await HiddenConversation.find({
       user: currentUserId,
     })
@@ -266,36 +316,44 @@ app.get('/api/users', verifyToken, async (req, res) => {
       String(item.otherUser)
     );
 
-    const users = await User.find({
-      _id: {
-        $ne: currentUserId,
-        $nin: hiddenUserIds,
-      },
-    })
-      .select('fullName email role')
-      .sort({ fullName: 1 })
-      .lean();
+    const excludedIds = [
+      currentUserId,
+      ...hiddenUserIds,
+    ];
+
+   const users = await User.find({
+  _id: {
+    $in: connectedUserIds,
+    $nin: excludedIds,
+  },
+})
+  .select('fullName name username email role profileImage avatarStyle')
+  .sort({ fullName: 1 })
+  .lean();
 
     return res.status(200).json(
       users.map((user) => ({
         ...user,
         id: String(user._id),
-        name: user.fullName,
+        name:
+          user.fullName ||
+          user.name ||
+          user.username ||
+          user.email ||
+          'User',
       }))
     );
   } catch (error) {
-    console.error('Error fetching users:', error.message);
+    console.error('Error fetching connected users:', error.message);
 
     return res.status(500).json({
-      message: 'Failed to fetch users.',
+      message: 'Failed to fetch connected users.',
     });
   }
 });
 
 // ==========================================
-// SEARCH USERS
-// Includes registered users even if their
-// conversations were previously hidden/deleted.
+// SEARCH ACCEPTED CONNECTIONS ONLY
 // ==========================================
 
 app.get('/api/users/search', verifyToken, async (req, res) => {
@@ -313,8 +371,29 @@ app.get('/api/users/search', verifyToken, async (req, res) => {
         ? req.query.q.trim()
         : '';
 
+    const connections = await Connection.find({
+      status: 'accepted',
+      $or: [
+        { requester: currentUserId },
+        { recipient: currentUserId },
+      ],
+    })
+      .select('requester recipient')
+      .lean();
+
+    const connectedUserIds = connections.map((connection) =>
+      String(connection.requester) === currentUserId
+        ? String(connection.recipient)
+        : String(connection.requester)
+    );
+
+    if (connectedUserIds.length === 0) {
+      return res.status(200).json([]);
+    }
+
     const filter = {
       _id: {
+        $in: connectedUserIds,
         $ne: currentUserId,
       },
     };
@@ -336,10 +415,10 @@ app.get('/api/users/search', verifyToken, async (req, res) => {
     }
 
     const users = await User.find(filter)
-      .select('fullName name username email role')
-      .sort({ fullName: 1 })
-      .limit(50)
-      .lean();
+    .select('fullName name username email role profileImage avatarStyle')
+    .sort({ fullName: 1 })
+    .limit(50)
+    .lean();
 
     return res.status(200).json(
       users.map((user) => ({
@@ -349,21 +428,21 @@ app.get('/api/users/search', verifyToken, async (req, res) => {
           user.fullName ||
           user.name ||
           user.username ||
-          user.email,
+          user.email ||
+          'User',
       }))
     );
   } catch (error) {
-    console.error('Error searching users:', error.message);
+    console.error('Error searching connections:', error.message);
 
     return res.status(500).json({
-      message: 'Failed to search users.',
+      message: 'Failed to search connected users.',
     });
   }
 });
 
 // ==========================================
 // GET NOTIFICATIONS
-// Excludes notifications hidden by this user.
 // ==========================================
 
 app.get(
@@ -390,15 +469,16 @@ app.get(
         userId: currentUserId,
         hiddenFor: { $ne: currentUserId },
       })
+        .populate('senderId', 'username profileImage avatarStyle')
         .sort({ createdAt: -1 })
         .lean();
 
-      const formattedNotifications = notifications.map((notif) => ({
-        ...notif,
-        timeAgo: getNotificationTime(notif.createdAt),
-      }));
-
-      return res.status(200).json(formattedNotifications);
+      return res.status(200).json(
+        notifications.map((notif) => ({
+          ...notif,
+          timeAgo: getNotificationTime(notif.createdAt),
+        }))
+      );
     } catch (error) {
       console.error('Error fetching notifications:', error.message);
 
@@ -411,7 +491,6 @@ app.get(
 
 // ==========================================
 // HIDE ONE NOTIFICATION FOR ME
-// Does not permanently delete the notification.
 // ==========================================
 
 app.patch(
@@ -444,9 +523,7 @@ app.patch(
             hiddenFor: currentUserId,
           },
         },
-        {
-          new: true,
-        }
+        { new: true }
       );
 
       if (!notification) {
@@ -471,7 +548,6 @@ app.patch(
 
 // ==========================================
 // HIDE ALL NOTIFICATIONS FOR ME
-// Does not permanently delete notifications.
 // ==========================================
 
 app.patch(
@@ -541,9 +617,7 @@ app.put(
           hiddenFor: { $ne: currentUserId },
         },
         {
-          $set: {
-            isRead: true,
-          },
+          $set: { isRead: true },
         }
       );
 
@@ -592,27 +666,38 @@ app.put(
         });
       }
 
-      const notification = await Notification.findOneAndUpdate(
-        {
-          _id: id,
-          userId: currentUserId,
-        },
-        {
-          $set: {
-            status,
-            isRead: true,
-          },
-        },
-        {
-          new: true,
-        }
-      );
+      const notification = await Notification.findOne({
+        _id: id,
+        userId: currentUserId,
+      });
 
       if (!notification) {
         return res.status(404).json({
           message: 'Notification not found.',
         });
       }
+
+      // Update the connection record when responding to a
+      // connection request notification.
+      const isConnectionRequest =
+        String(notification.type || '').toLowerCase().includes('connection') ||
+        String(notification.type || '').toLowerCase().includes('friend');
+
+      if (isConnectionRequest && notification.senderId) {
+        const connection = await Connection.findOne({
+          requester: notification.senderId,
+          recipient: currentUserId,
+        });
+
+        if (connection) {
+          connection.status = status;
+          await connection.save();
+        }
+      }
+
+      notification.status = status;
+      notification.isRead = true;
+      await notification.save();
 
       return res.status(200).json({
         success: true,
@@ -630,10 +715,6 @@ app.put(
 
 // ==========================================
 // DELETE CONVERSATION FOR ME
-//
-// - Hides the conversation from this account.
-// - Marks existing messages as deleted for this account.
-// - Does not delete messages for the other participant.
 // ==========================================
 
 app.delete(
@@ -644,10 +725,7 @@ app.delete(
       const currentUserId = getUserId(req.user);
       const { otherUserId } = req.params;
 
-      if (
-        !isValidId(currentUserId) ||
-        !isValidId(otherUserId)
-      ) {
+      if (!isValidId(currentUserId) || !isValidId(otherUserId)) {
         return res.status(400).json({
           message: 'Invalid user ID.',
         });
@@ -669,7 +747,6 @@ app.delete(
         });
       }
 
-      // Mark existing messages as deleted for this account only.
       await Message.updateMany(
         {
           $or: [
@@ -690,7 +767,6 @@ app.delete(
         }
       );
 
-      // Hide this conversation from this account's Chats list.
       await HiddenConversation.findOneAndUpdate(
         {
           user: currentUserId,
@@ -723,93 +799,9 @@ app.delete(
 );
 
 // ==========================================
-// GET CHAT HISTORY
-//
-// Only the authenticated user's messages are returned.
-// Messages deleted for this account stay hidden.
+// CHAT HISTORY
+// Keep this in routes/messages.js
 // ==========================================
-
-app.get(
-  '/api/messages/:userId1/:userId2',
-  verifyToken,
-  async (req, res) => {
-    try {
-      const currentUserId = getUserId(req.user);
-      const { userId1, userId2 } = req.params;
-
-      if (
-        !isValidId(currentUserId) ||
-        !isValidId(userId1) ||
-        !isValidId(userId2)
-      ) {
-        return res.status(400).json({
-          message: 'Invalid user ID.',
-        });
-      }
-
-      // The logged-in user must be one of the participants.
-      if (
-        currentUserId !== userId1 &&
-        currentUserId !== userId2
-      ) {
-        return res.status(403).json({
-          message: 'You cannot access this conversation.',
-        });
-      }
-
-      const otherUserId =
-        currentUserId === userId1 ? userId2 : userId1;
-
-      if (currentUserId === otherUserId) {
-        return res.status(400).json({
-          message: 'Invalid conversation.',
-        });
-      }
-
-      const otherUserExists = await User.exists({
-        _id: otherUserId,
-      });
-
-      if (!otherUserExists) {
-        return res.status(404).json({
-          message: 'User not found.',
-        });
-      }
-
-      const messages = await Message.find({
-        $and: [
-          {
-            $or: [
-              {
-                sender: currentUserId,
-                recipient: otherUserId,
-              },
-              {
-                sender: otherUserId,
-                recipient: currentUserId,
-              },
-            ],
-          },
-          {
-            deletedFor: {
-              $ne: currentUserId,
-            },
-          },
-        ],
-      })
-        .sort({ createdAt: 1 })
-        .lean();
-
-      return res.status(200).json(messages);
-    } catch (error) {
-      console.error('Error fetching messages:', error.message);
-
-      return res.status(500).json({
-        message: 'Failed to fetch messages.',
-      });
-    }
-  }
-);
 
 // ==========================================
 // SOCKET.IO AUTHENTICATION
@@ -837,7 +829,6 @@ io.use((socket, next) => {
     }
 
     socket.data.userId = userId;
-
     return next();
   } catch (error) {
     return next(new Error('Invalid or expired token.'));
@@ -858,13 +849,103 @@ io.on('connection', (socket) => {
   }
 
   onlineUsers.get(userId).add(socket.id);
-
   socket.join(`user:${userId}`);
+
+    // ==========================================
+  // GROUP CHAT - JOIN PROJECT ROOM
+  // PROJECT OWNER AND MEMBERS ONLY
+  // ==========================================
+
+  socket.on('join_project_chat', async (payload, callback) => {
+    try {
+      const projectId = String(payload?.projectId || '');
+
+      if (!isValidId(projectId)) {
+        return callback?.({
+          success: false,
+          message: 'Invalid project ID.',
+        });
+      }
+
+      const project = await Project.findById(projectId)
+        .select('owner members')
+        .lean();
+
+      if (!project) {
+        return callback?.({
+          success: false,
+          message: 'Project not found.',
+        });
+      }
+
+      const isOwner = String(project.owner) === userId;
+
+      const isMember = (project.members || []).some(
+        (member) => String(member) === userId
+      );
+
+      if (!isOwner && !isMember) {
+        return callback?.({
+          success: false,
+          message: 'Only project members can join this group chat.',
+        });
+      }
+
+      const roomName = `project:${projectId}`;
+
+      await socket.join(roomName);
+
+      return callback?.({
+        success: true,
+        message: 'Joined project group chat.',
+        projectId,
+      });
+    } catch (error) {
+      console.error('Join project chat error:', error.message);
+
+      return callback?.({
+        success: false,
+        message: 'Failed to join project group chat.',
+      });
+    }
+  });
+
+  // ==========================================
+  // GROUP CHAT - LEAVE PROJECT ROOM
+  // ==========================================
+
+  socket.on('leave_project_chat', async (payload, callback) => {
+    try {
+      const projectId = String(payload?.projectId || '');
+
+      if (!isValidId(projectId)) {
+        return callback?.({
+          success: false,
+          message: 'Invalid project ID.',
+        });
+      }
+
+      await socket.leave(`project:${projectId}`);
+
+      return callback?.({
+        success: true,
+        projectId,
+      });
+    } catch (error) {
+      console.error('Leave project chat error:', error.message);
+
+      return callback?.({
+        success: false,
+        message: 'Failed to leave project group chat.',
+      });
+    }
+  });
 
   io.emit('get_online_users', Array.from(onlineUsers.keys()));
 
   // ==========================================
   // SEND MESSAGE
+  // Only accepted connections can chat
   // ==========================================
 
   socket.on('send_message', async (payload, callback) => {
@@ -908,7 +989,27 @@ io.on('connection', (socket) => {
         });
       }
 
-      // Save the new message.
+      const acceptedConnection = await Connection.exists({
+        status: 'accepted',
+        $or: [
+          {
+            requester: userId,
+            recipient: recipientId,
+          },
+          {
+            requester: recipientId,
+            recipient: userId,
+          },
+        ],
+      });
+
+      if (!acceptedConnection) {
+        return callback?.({
+          success: false,
+          message: 'You can only message accepted connections.',
+        });
+      }
+
       const newMessage = await Message.create({
         sender: userId,
         recipient: recipientId,
@@ -917,16 +1018,7 @@ io.on('connection', (socket) => {
 
       const messageData = newMessage.toObject();
 
-      // ==========================================
-      // RESTORE CONVERSATION VISIBILITY
-      //
-      // A new message makes the conversation visible
-      // again to both participants.
-      //
-      // Previously deleted messages remain hidden
-      // for accounts that deleted them.
-      // ==========================================
-
+      // Restore conversation visibility after a new message.
       await HiddenConversation.deleteMany({
         $or: [
           {
@@ -940,7 +1032,6 @@ io.on('connection', (socket) => {
         ],
       });
 
-      // Notify both accounts to refresh their Chats list.
       io.to(`user:${userId}`).emit('conversation_restored', {
         otherUserId: recipientId,
       });
@@ -949,10 +1040,7 @@ io.on('connection', (socket) => {
         otherUserId: userId,
       });
 
-      // ==========================================
-      // CREATE NOTIFICATION FOR RECIPIENT
-      // ==========================================
-
+      // Create a notification for the recipient.
       try {
         const sender = await User.findById(userId)
           .select('fullName name username')
@@ -977,15 +1065,10 @@ io.on('connection', (socket) => {
           status: 'pending',
         });
 
-        const notificationData = {
+        io.to(`user:${recipientId}`).emit('new_notification', {
           ...notification.toObject(),
           timeAgo: 'Just now',
-        };
-
-        io.to(`user:${recipientId}`).emit(
-          'new_notification',
-          notificationData
-        );
+        });
       } catch (notificationError) {
         console.error(
           'Error creating notification:',
@@ -993,13 +1076,11 @@ io.on('connection', (socket) => {
         );
       }
 
-      // Send the message to all recipient connections.
       io.to(`user:${recipientId}`).emit(
         'receive_message',
         messageData
       );
 
-      // Confirm the saved message to the sender.
       return callback?.({
         success: true,
         message: messageData,
