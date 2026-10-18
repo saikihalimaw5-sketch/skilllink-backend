@@ -336,11 +336,11 @@ app.get('/api/users', verifyToken, async (req, res) => {
         ...user,
         id: String(user._id),
         name:
-          user.fullName ||
-          user.name ||
-          user.username ||
-          user.email ||
-          'User',
+  user.username ||
+  user.fullName ||
+  user.name ||
+  user.email ||
+  'User',
       }))
     );
   } catch (error) {
@@ -425,11 +425,11 @@ app.get('/api/users/search', verifyToken, async (req, res) => {
         ...user,
         id: String(user._id),
         name:
-          user.fullName ||
-          user.name ||
-          user.username ||
-          user.email ||
-          'User',
+  user.username ||
+  user.fullName ||
+  user.name ||
+  user.email ||
+  'User',
       }))
     );
   } catch (error) {
@@ -1047,10 +1047,10 @@ io.on('connection', (socket) => {
           .lean();
 
         const senderName =
-          sender?.fullName ||
-          sender?.name ||
-          sender?.username ||
-          'Someone';
+  sender?.username ||
+  sender?.fullName ||
+  sender?.name ||
+  'Someone';
 
         const notification = await Notification.create({
           userId: recipientId,

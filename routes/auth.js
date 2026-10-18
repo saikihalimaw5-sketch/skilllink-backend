@@ -78,13 +78,21 @@ const verifyToken = (req, res, next) => {
 // signup 
 router.post('/signup', async (req, res) => { 
   try { 
-    const { fullName, email, password, phoneNumber, role } = req.body; 
+    const { username, email, password, phoneNumber, role } = req.body;
 
-    if (!fullName || !email || !password || !phoneNumber) { 
+    if (!username || !email || !password || !phoneNumber) {
       return res.status(400).json({ 
         message: 'Please fill in all required fields.' 
       }); 
     } 
+    if (
+  typeof username !== 'string' ||
+  !/^[a-zA-Z0-9_]{3,15}$/.test(username.trim())
+) {
+  return res.status(400).json({
+    message: 'Username must be 3–15 characters using letters, numbers, or underscores.'
+  });
+}
 
     const existingUser = await User.findOne({ 
       email: email.toLowerCase().trim() 
@@ -103,14 +111,14 @@ router.post('/signup', async (req, res) => {
     ).toString(); 
 
     const signupToken = jwt.sign( 
-      { 
-        fullName, 
-        email: email.toLowerCase().trim(), 
-        password: hashedPassword, 
-        phoneNumber, 
-        role: role || 'student', 
-        otp: generatedOTP 
-      }, 
+      {
+  username: username.trim(),
+  email: email.toLowerCase().trim(),
+  password: hashedPassword,
+  phoneNumber,
+  role: role || 'student',
+  otp: generatedOTP
+}, 
       TEMP_SECRET, 
       { expiresIn: '3m' } 
     ); 
@@ -122,7 +130,7 @@ router.post('/signup', async (req, res) => {
       html: ` 
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 10px;"> 
           <h2 style="color: #a855f7;">Welcome to SkillLink!</h2> 
-          <p>Hello ${fullName},</p> 
+          <p>Hello ${username},</p>
           <p>Please use this 6-digit code to verify and complete your registration:</p> 
           <h1 style="background-color: #1e293b; color: #38bdf8; padding: 10px 20px; display: inline-block; letter-spacing: 4px; border-radius: 8px;">${generatedOTP}</h1> 
           <p style="color: #94a3b8; font-size: 12px;">This code will expire in 3 minutes.</p> 
@@ -186,7 +194,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       html: ` 
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 10px;"> 
           <h2 style="color: #a855f7;">SkillLink Verification Code</h2> 
-          <p>Hello ${user.fullName},</p> 
+          <p>Hello ${user.username || user.fullName || 'User'},</p> 
           <p>Please use this 6-digit code to complete security verification:</p> 
           <h1 style="background-color: #1e293b; color: #38bdf8; padding: 10px 20px; display: inline-block; letter-spacing: 4px; border-radius: 8px;">${generatedOTP}</h1> 
           <p style="color: #94a3b8; font-size: 12px;">This code will expire in 3 minutes.</p> 
@@ -242,14 +250,18 @@ router.post('/verify-otp', async (req, res) => {
         }); 
       } 
 
-      const newUser = new User({ 
-        fullName: decoded.fullName, 
-        email: decoded.email, 
-        password: decoded.password, 
-        phoneNumber: decoded.phoneNumber, 
-        role: decoded.role, 
-        isMfaVerified: true 
-      }); 
+      const newUser = new User({
+  username: decoded.username,
+  email: decoded.email,
+  password: decoded.password,
+  phoneNumber: decoded.phoneNumber,
+  role: decoded.role,
+  isMfaVerified: true,
+  avatarStyle: 'avataaars'
+});
+
+newUser.profileImage =
+  `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(String(newUser._id))}`;
 
       await newUser.save(); 
 
@@ -265,12 +277,14 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(201).json({ 
         message: 'Account successfully verified and created!', 
         token, 
-        user: { 
-          id: newUser._id, 
-          fullName: newUser.fullName, 
-          email: newUser.email, 
-          role: newUser.role 
-        } 
+        user: {
+  id: newUser._id,
+  username: newUser.username,
+  email: newUser.email,
+  role: newUser.role,
+  profileImage: newUser.profileImage,
+  avatarStyle: newUser.avatarStyle
+}
       }); 
     } 
 
@@ -366,7 +380,7 @@ router.post('/resend-otp', async (req, res) => {
 
       const newSignupToken = jwt.sign( 
         { 
-          fullName: decoded.fullName, 
+          username: decoded.username,
           email: decoded.email, 
           password: decoded.password, 
           phoneNumber: decoded.phoneNumber, 
@@ -384,7 +398,7 @@ router.post('/resend-otp', async (req, res) => {
         html: ` 
           <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 10px;"> 
             <h2 style="color: #a855f7;">New Verification Code</h2> 
-            <p>Hello ${decoded.fullName},</p> 
+            <p>Hello ${decoded.username},</p>
             <p>Please use this new 6-digit code for your signup verification:</p> 
             <h1 style="background-color: #1e293b; color: #38bdf8; padding: 10px 20px; display: inline-block; letter-spacing: 4px; border-radius: 8px;">${generatedOTP}</h1> 
             <p style="color: #94a3b8; font-size: 12px;">This code will expire in 3 minutes.</p> 
@@ -430,7 +444,7 @@ router.post('/resend-otp', async (req, res) => {
       html: ` 
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 10px;"> 
           <h2 style="color: #a855f7;">New Verification Code</h2> 
-          <p>Hello ${user.fullName},</p> 
+          <p>Hello ${user.username || user.fullName || 'User'},</p> 
           <p>Please use this new 6-digit code for your login verification:</p> 
           <h1 style="background-color: #1e293b; color: #38bdf8; padding: 10px 20px; display: inline-block; letter-spacing: 4px; border-radius: 8px;">${generatedOTP}</h1> 
           <p style="color: #94a3b8; font-size: 12px;">This code will expire in 3 minutes.</p> 
@@ -491,7 +505,7 @@ router.post('/forgot-password', async (req, res) => {
       html: ` 
         <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 10px;"> 
           <h2 style="color: #a855f7;">Password Reset Request</h2> 
-          <p>Hello ${user.fullName},</p> 
+          <p>Hello ${user.username || user.fullName || 'User'},</p> 
           <p>You requested to reset your password. Please use this 6-digit code to reset your password:</p> 
           <h1 style="background-color: #1e293b; color: #38bdf8; padding: 10px 20px; display: inline-block; letter-spacing: 4px; border-radius: 8px;">${generatedOTP}</h1> 
           <p style="color: #94a3b8; font-size: 12px;">This code will expire in 3 minutes. If you did not request this, please ignore this email.</p> 
@@ -627,21 +641,40 @@ router.get('/my-hobbies', verifyToken, async (req, res) => {
   }
 });
 
+
 // 3. Get All Registered Users
 router.get('/users', verifyToken, async (req, res) => {
   try {
     const users = await User.find()
-      .select('username profileImage avatarStyle bio hobbies role updatedAt');
+      .select('username fullName profileImage avatarStyle bio hobbies role updatedAt')
+      .lean();
 
-    res.status(200).json(users);
+    const usersWithAvatars = users.map((user) => {
+      const avatarStyle = user.avatarStyle || 'avataaars';
+
+      const defaultAvatar =
+        `https://api.dicebear.com/9.x/${avatarStyle}/svg?seed=${encodeURIComponent(String(user._id))}`;
+
+      return {
+        ...user,
+        avatarStyle,
+        profileImage:
+          typeof user.profileImage === 'string' && user.profileImage.trim()
+            ? user.profileImage
+            : defaultAvatar
+      };
+    });
+
+    return res.status(200).json(usersWithAvatars);
   } catch (error) {
     console.error('Error fetching users:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: 'Error fetching users.'
     });
   }
 });
+
 // 4. Update Profile for Logged-In User
 router.put('/update-profile', verifyToken, async (req, res) => {
   try {

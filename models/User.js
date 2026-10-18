@@ -2,10 +2,10 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
   fullName: {
-    type: String,
-    required: true
-  },
-  username: {
+  type: String,
+  required: false
+},
+username: {
   type: String,
   trim: true,
   minlength: 3,
@@ -27,9 +27,9 @@ const userSchema = new mongoose.Schema({
     default: ''
   },
   avatarStyle: {
-    type: String,
-    default: 'default'
-  },
+  type: String,
+  default: 'avataaars'
+},
   password: {
     type: String,
     required: true
