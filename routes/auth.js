@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router(); 
 const bcrypt = require('bcryptjs'); 
 const jwt = require('jsonwebtoken'); 
-const nodemailer = require('nodemailer'); 
+const { google } = require('googleapis');
 const rateLimit = require('express-rate-limit'); 
 const User = require('../models/User'); 
 
@@ -17,19 +17,40 @@ const loginLimiter = rateLimit({
   } 
 }); 
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-  auth: {
-    type: 'OAuth2',
-    user: process.env.EMAIL_USER,
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    refreshToken: process.env.GOOGLE_REFRESH_TOKEN
-  }
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET
+);
+
+oauth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN
 });
+
+const gmail = google.gmail({
+  version: 'v1',
+  auth: oauth2Client
+});
+
+const transporter = {
+  async sendMail({ from, to, subject, html }) {
+    const rawMessage = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      '',
+      html
+    ].join('\r\n');
+
+    const encodedMessage = Buffer.from(rawMessage).toString('base64url');
+
+    return gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encodedMessage }
+    });
+  }
+};
 
 const TEMP_SECRET = process.env.JWT_SECRET || 'secretkey123'; 
 
@@ -630,8 +651,8 @@ router.put('/update-profile', verifyToken, async (req, res) => {
     // Validate username
     if (
       typeof username !== 'string' ||
-      !/^[a-zA-Z0-9_]{3,15}$/(username.trim())
-    ) {
+!/^[a-zA-Z0-9_]{3,15}$/.test(username.trim())  
+  ) {
       return res.status(400).json({
         message: 'Username must be 3–15 characters using letters, numbers, or underscores.'
       });
