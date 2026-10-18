@@ -630,10 +630,10 @@ router.put('/update-profile', verifyToken, async (req, res) => {
     // Validate username
     if (
       typeof username !== 'string' ||
-      !/^[a-zA-Z0-9_]{3,8}$/.test(username.trim())
+      !/^[a-zA-Z0-9_]{3,15}$/(username.trim())
     ) {
       return res.status(400).json({
-        message: 'Username must be 3–8 characters using letters, numbers, or underscores.'
+        message: 'Username must be 3–15 characters using letters, numbers, or underscores.'
       });
     }
 
